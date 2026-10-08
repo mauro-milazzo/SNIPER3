@@ -29,3 +29,40 @@
 * **One-Click Clipboard & Export:** Fast interactive copy button with visual feedback and individual fragment `.txt` downloads formatted for Primer3.
 
 ---
+
+## 📖 How to Use SNIPER3
+
+### 1. Generating a Template Sequence
+
+1. **Select an Input Method:**
+   * **Gene Symbol + Exon Number:** Enter a gene symbol (e.g., `CFTR`) and select the desired exon number. SNIPER3 automatically fetches RefSeq transcripts, maps the exon boundaries, and capitalizes exonic sequence while keeping intronic flanking sequence in lowercase.
+   * **Genomic Coordinates (GRCh38/hg38):** Enter exact coordinates (`Chromosome`, `Start`, and `End`).
+   * **rs-Number (dbSNP ID):** Enter a dbSNP ID (e.g., `rs113993960`) to automatically resolve its position and center the template around the variant.
+2. **Configure Parameters (Sidebar):**
+   * **Flanking Region & Padding:** Adjust upstream/downstream intronic sequence length and target padding around exons.
+   * **Variant Filtering:** Toggle SNP highlighting, select the database (**gnomAD v4** or **UCSC snp151**), and set MAF % thresholds and minimum sample size (AN) to filter out rare artifacts.
+   * **Segmentation:** Enable auto-splitting for large target regions (>600 bp) into overlapping sub-amplicons.
+3. **Generate:** Click **🚀 Generate Sequence Templates**.
+
+---
+
+### 2. Understanding the Interactive Output
+
+* **Sequence Visualizer:**
+  * **`[ ]` Blue Brackets:** Mark the target region + padding.
+  * **UPPERCASE vs lowercase:** UPPERCASE bases represent the target/exonic region; lowercase bases represent flanking/intronic regions.
+  * **<span style="color:red; font-weight:bold;">Red Underlined Bases</span>:** Indicate flagged population variants (SNPs, MNVs, or indels) passing your MAF and sample size thresholds.
+  * **Interactive Tooltips & Links:** Hover over any underlined variant to inspect its exact Allele Frequency (AF %) and total sample size (AN). Click on the variant to open its dedicated page on gnomAD or NCBI dbSNP.
+
+---
+
+### 3. Using Output in Primer3 / Primer3Plus
+
+1. Click **📋 Copy Sequence** under your desired fragment. The text area will flash green to confirm the sequence is copied to your clipboard.
+2. Open **[Primer3Web](https://primer3.ut.ee/)** or **[Primer3Plus](https://www.primer3plus.com/)**.
+3. Paste the copied sequence directly into the **`SEQUENCE_TEMPLATE`** input field.
+4. **How Primer3 Interprets SNIPER3 Formatting:**
+   * **Brackets `[ ]`:** Define the target region that primers must flank.
+   * **Angle Brackets `< >`:** Tell Primer3 to **avoid placing primer binding sites** on these positions (neutralizing SNP mismatch risks).
+   * **Capitalization:** Useful when configuring Primer3 parameters like `Included Region` or setting specific conditions for exonic boundaries.
+5. Click **Pick Primers** in Primer3 to receive optimal primer pairs that completely avoid high-frequency population variants!
