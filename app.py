@@ -134,8 +134,8 @@ def fetch_gnomad_v4_snps(chrom: str, start_pos: int, end_pos: int):
     """
     variables = {
         "chrom": c_clean,
-        "start": start_pos,
-        "stop": end_pos,
+        "start": int(start_pos),
+        "stop": int(end_pos),
         "dataset": "gnomad_r4"
     }
 
@@ -260,7 +260,7 @@ if enable_snp_filtering:
     maf_option = st.sidebar.selectbox(
         "Minimum MAF Threshold (%)",
         options=["0.01%", "0.10%", "1.00%", "Manual input"],
-        index=0,  # "0.01%" is nu de standaard geselecteerde optie
+        index=0,
         on_change=clear_results,
         help="Select a preset MAF threshold or choose 'Manual input' to specify a custom value up to 4 decimal places."
     )
@@ -325,13 +325,12 @@ else:
 st.sidebar.header("🔗 External Tools")
 st.sidebar.link_button("🌐 Open Primer3web", "https://primer3.ut.ee/", use_container_width=True)
 st.sidebar.link_button("🌐 Open Primer3Plus", "https://www.primer3plus.com/", use_container_width=True)
-st.sidebar.link_button("🌐 Open gnomAD Browser v4", "https://gnomad.broadinstitute.org/", use_container_width=True)
 st.sidebar.link_button("🌐 Open NCBI Primer-BLAST", "https://www.ncbi.nlm.nih.gov/tools/primer-blast/", use_container_width=True)
 st.sidebar.link_button("🌐 Open UNAFold", "https://www.unafold.org/mfold/applications/dna-folding-form.php", use_container_width=True)
 st.sidebar.link_button("🌐 Open UCSC In-Silico PCR", "https://genome.ucsc.edu/cgi-bin/hgPcr", use_container_width=True)
 
 # ==========================================
-# INPUT SELECTION (DEFAULT: CFTR EXON 11)
+# INPUT SELECTION
 # ==========================================
 input_type = st.radio(
     "Select Input Method:", 
@@ -397,8 +396,8 @@ elif input_type == "Genomic Coordinates (GRCh38/hg38)":
     if chrom and exon_start and exon_end:
         header_label = f"chr{chrom}:{exon_start}-{exon_end} (GRCh38/hg38)"
 
-else:  # rs-Number input
-    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs397508194, rs4680):", value="rs397508194", on_change=clear_results).strip()
+else:  # rs-Number input (Default: rs113993960)
+    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs113993960, rs4680):", value="rs113993960", on_change=clear_results).strip()
     if rs_input:
         c, s, e, formatted_rs = resolve_rsid(rs_input)
         if c and s and e:
@@ -495,6 +494,7 @@ if st.session_state.get("trigger_generate", False):
                                 
                                 if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
                                     unique_snps_count.add(var_id)
+                                    # Handle Multi-Nucleotide Variants / Deletions
                                     for bp_offset in range(ref_len):
                                         curr_pos = var_pos + bp_offset
                                         rel_pos = curr_pos - fetch_start
