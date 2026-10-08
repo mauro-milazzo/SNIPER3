@@ -19,7 +19,7 @@ st.caption("**S**NP-**N**eutralizing **I**ntelligent **P**rimer3 **E**xon & **R*
 st.markdown(
     "Generate standardized sequence templates formatted for Primer3Web and Primer3Plus using **GRCh38/hg38** coordinates. "
     "Features include large exon auto-splitting, exonic/target sequence capitalization, "
-    "and automated SNP filtering (< >) by MAF and population sample size."
+    "and automated SNP filtering (< >) by MAF and population sample size via **gnomAD v4** or **UCSC snp151**."
 )
 
 # Initialize Session State
@@ -102,9 +102,81 @@ def fetch_ucsc_snps(chrom: str, start_pos: int, end_pos: int):
     return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def fetch_gnomad_v4_snps(chrom: str, start_pos: int, end_pos: int):
+    """Fetch region variants from gnomAD v4 via GraphQL API (GRCh38)."""
+    c_clean = str(chrom).lower().replace('chr', '')
+    if c_clean == '23': c_clean = 'X'
+    elif c_clean == '24': c_clean = 'Y'
+
+    url = "https://gnomad.broadinstitute.org/api"
+    query = """
+    query GnomadRegionVariants($chrom: String!,$start: Int!, $stop: Int!,$dataset: DatasetId!) {
+      region(chrom: $chrom, start: $start, stop:$stop, reference_genome: GRCh38) {
+        variants(dataset: $dataset) {
+          variant_id
+          rsids
+          pos
+          ref
+          alt
+          genome {
+            ac
+            an
+            af
+          }
+          exome {
+            ac
+            an
+            af
+          }
+        }
+      }
+    }
+    """
+    variables = {
+        "chrom": c_clean,
+        "start": start_pos,
+        "stop": end_pos,
+        "dataset": "gnomad_r4"
+    }
+
+    try:
+        r = requests.post(url, json={"query": query, "variables": variables}, timeout=10)
+        if r.ok:
+            data = r.json()
+            raw_variants = data.get("data", {}).get("region", {}).get("variants", [])
+            
+            parsed_variants = []
+            for v in raw_variants:
+                exome_af = v.get("exome", {}).get("af") if v.get("exome") else 0.0
+                genome_af = v.get("genome", {}).get("af") if v.get("genome") else 0.0
+                max_af = max(exome_af or 0.0, genome_af or 0.0)
+
+                exome_an = v.get("exome", {}).get("an") if v.get("exome") else 0
+                genome_an = v.get("genome", {}).get("an") if v.get("genome") else 0
+                total_an = (exome_an or 0) + (genome_an or 0)
+
+                rsids = v.get("rsids") or []
+                rs_name = rsids[0] if rsids else v["variant_id"]
+
+                parsed_variants.append({
+                    "name": rs_name,
+                    "variant_id": v["variant_id"],
+                    "pos": v["pos"],
+                    "ref": v["ref"],
+                    "alt": v["alt"],
+                    "maf": max_af,
+                    "total_n": total_an
+                })
+            return parsed_variants
+    except Exception as e:
+        st.warning(f"Error querying gnomAD v4 API: {e}")
+
+    return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def resolve_rsid(rs_id: str):
     """
-    Resolves an rsID to exact single-nucleotide GRCh38/hg38 coordinates using the UCSC search API
+    Resolves an rsID to exact GRCh38/hg38 coordinates using the UCSC search API
     by parsing the 'highlight' field inside the 'snp151' track match.
     """
     rs_clean = rs_id.strip().lower()
@@ -149,6 +221,9 @@ def resolve_rsid(rs_id: str):
 # ==========================================
 # SIDEBAR CONFIGURATION
 # ==========================================
+st.sidebar.header("📁 Project Repository")
+st.sidebar.link_button("📂 View on GitHub / README", "https://github.com/mauro-milazzo/SNIPER3", use_container_width=True)
+
 st.sidebar.header("⚙️ Flanking & Target Parameters")
 
 flank_size = st.sidebar.number_input(
@@ -174,20 +249,50 @@ enable_snp_filtering = st.sidebar.checkbox(
 )
 
 if enable_snp_filtering:
-    snp_maf_threshold = st.sidebar.number_input(
-        "Minimum MAF Threshold (%)", 
-        min_value=0.0, max_value=50.0, value=0.1, step=0.1,
+    snp_source = st.sidebar.radio(
+        "Variant Database Source:",
+        ["gnomAD v4 (GraphQL)", "UCSC snp151 (dbSNP)"],
+        index=0,
         on_change=clear_results,
-        help="Variants with a Minor Allele Frequency (MAF) at or above this threshold will be flagged."
-    ) / 100.0
+        help="Choose between gnomAD v4 (>800k exomes/genomes) or UCSC dbSNP track."
+    )
+
+    maf_option = st.sidebar.selectbox(
+        "Minimum MAF Threshold (%)",
+        options=["0.01%", "0.10%", "1.00%", "Manual input"],
+        index=0,  # "0.01%" is nu de standaard geselecteerde optie
+        on_change=clear_results,
+        help="Select a preset MAF threshold or choose 'Manual input' to specify a custom value up to 4 decimal places."
+    )
+
+    if maf_option == "0.01%":
+        maf_pct_val = 0.01
+    elif maf_option == "0.10%":
+        maf_pct_val = 0.10
+    elif maf_option == "1.00%":
+        maf_pct_val = 1.00
+    else:  # Manual input
+        maf_pct_val = st.sidebar.number_input(
+            "Custom MAF Threshold (%)",
+            min_value=0.0,
+            max_value=50.0,
+            value=0.0100,
+            step=0.1000,
+            format="%.4f",
+            on_change=clear_results,
+            help="Enter a custom MAF threshold (up to 4 decimal places)."
+        )
+
+    snp_maf_threshold = maf_pct_val / 100.0
 
     min_allele_n_threshold = st.sidebar.number_input(
-        "Minimum Allele Count Threshold (alleleNs)", 
-        min_value=10, max_value=100000, value=1000, step=100,
+        "Minimum Allele Count Threshold (alleleNs / AN)", 
+        min_value=10, max_value=1000000, value=1000, step=1000,
         on_change=clear_results,
-        help="Minimum total observed alleles in dbSNP. Filters out small-cohort artifacts (e.g., SGDP)."
+        help="Minimum total observed alleles in database. Filters out small-cohort artifacts."
     )
 else:
+    snp_source = "None"
     snp_maf_threshold = 0.0
     min_allele_n_threshold = 0
 
@@ -220,12 +325,13 @@ else:
 st.sidebar.header("🔗 External Tools")
 st.sidebar.link_button("🌐 Open Primer3web", "https://primer3.ut.ee/", use_container_width=True)
 st.sidebar.link_button("🌐 Open Primer3Plus", "https://www.primer3plus.com/", use_container_width=True)
+st.sidebar.link_button("🌐 Open gnomAD Browser v4", "https://gnomad.broadinstitute.org/", use_container_width=True)
 st.sidebar.link_button("🌐 Open NCBI Primer-BLAST", "https://www.ncbi.nlm.nih.gov/tools/primer-blast/", use_container_width=True)
 st.sidebar.link_button("🌐 Open UNAFold", "https://www.unafold.org/mfold/applications/dna-folding-form.php", use_container_width=True)
 st.sidebar.link_button("🌐 Open UCSC In-Silico PCR", "https://genome.ucsc.edu/cgi-bin/hgPcr", use_container_width=True)
 
 # ==========================================
-# INPUT SELECTION
+# INPUT SELECTION (DEFAULT: CFTR EXON 11)
 # ==========================================
 input_type = st.radio(
     "Select Input Method:", 
@@ -242,9 +348,9 @@ header_label = ""
 if input_type == "Gene Symbol + Exon Number":
     col1, col2 = st.columns(2)
     with col1:
-        gene_input = st.text_input("Gene Symbol (e.g., COMT, FKRP, ANO5):", value="COMT", on_change=clear_results).strip().upper()
+        gene_input = st.text_input("Gene Symbol (e.g., CFTR, COMT, ANO5):", value="CFTR", on_change=clear_results).strip().upper()
     with col2:
-        exon_num = st.number_input("Exon Number:", min_value=1, value=4, step=1, on_change=clear_results)
+        exon_num = st.number_input("Exon Number:", min_value=1, value=11, step=1, on_change=clear_results)
         
     if gene_input:
         gene_transcripts = fetch_refseq_transcripts(gene_input)
@@ -282,17 +388,17 @@ if input_type == "Gene Symbol + Exon Number":
 elif input_type == "Genomic Coordinates (GRCh38/hg38)":
     col1, col2, col3 = st.columns(3)
     with col1:
-        chrom = st.text_input("Chromosome (e.g., 22, X):", value="22", on_change=clear_results).strip()
+        chrom = st.text_input("Chromosome (e.g., 7, 22, X):", value="7", on_change=clear_results).strip()
     with col2:
-        exon_start = st.number_input("Target Start Position (GRCh38/hg38):", min_value=1, value=19963748, on_change=clear_results)
+        exon_start = st.number_input("Target Start Position (GRCh38/hg38):", min_value=1, value=117559464, on_change=clear_results)
     with col3:
-        exon_end = st.number_input("Target End Position (GRCh38/hg38):", min_value=1, value=19963748, on_change=clear_results)
+        exon_end = st.number_input("Target End Position (GRCh38/hg38):", min_value=1, value=117559655, on_change=clear_results)
     
     if chrom and exon_start and exon_end:
         header_label = f"chr{chrom}:{exon_start}-{exon_end} (GRCh38/hg38)"
 
 else:  # rs-Number input
-    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs4680, rs113744932):", value="rs4680", on_change=clear_results).strip()
+    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs397508194, rs4680):", value="rs397508194", on_change=clear_results).strip()
     if rs_input:
         c, s, e, formatted_rs = resolve_rsid(rs_input)
         if c and s and e:
@@ -339,7 +445,7 @@ if st.session_state.get("trigger_generate", False):
     st.session_state["trigger_generate"] = False
     
     if chrom and exon_start and exon_end:
-        with st.spinner("Processing genomic sequence and variant data (GRCh38/hg38)..."):
+        with st.spinner(f"Processing genomic sequence and variant data via {snp_source if enable_snp_filtering else 'GRCh38'}..."):
             
             full_target_start = exon_start - target_padding
             full_target_end = exon_end + target_padding
@@ -377,47 +483,75 @@ if st.session_state.get("trigger_generate", False):
                     unique_snps_count = set()
                     
                     if enable_snp_filtering:
-                        raw_snps = fetch_ucsc_snps(c_clean, fetch_start, fetch_end)
-                        
-                        for snp in raw_snps:
-                            allele_ns_raw = snp.get('alleleNs', '')
-                            allele_freqs_raw = snp.get('alleleFreqs', '')
-                            rs_name = snp.get('name', 'rsID Unknown')
-                            
-                            total_n = 0.0
-                            maf = 0.0
-                            
-                            if allele_ns_raw:
-                                try:
-                                    ns = [float(n) for n in str(allele_ns_raw).strip(',').split(',') if n]
-                                    total_n = sum(ns)
-                                except ValueError:
-                                    total_n = 0.0
+                        if "gnomAD" in snp_source:
+                            raw_snps = fetch_gnomad_v4_snps(c_clean, fetch_start, fetch_end)
+                            for snp in raw_snps:
+                                total_n = snp['total_n']
+                                maf = snp['maf']
+                                rs_name = snp['name']
+                                var_id = snp['variant_id']
+                                var_pos = snp['pos']
+                                ref_len = max(1, len(snp.get('ref', '')))
+                                
+                                if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
+                                    unique_snps_count.add(var_id)
+                                    for bp_offset in range(ref_len):
+                                        curr_pos = var_pos + bp_offset
+                                        rel_pos = curr_pos - fetch_start
+                                        if 0 <= rel_pos < len(raw_seq):
+                                            snp_map[rel_pos] = {
+                                                'name': rs_name,
+                                                'variant_id': var_id,
+                                                'maf': maf * 100,
+                                                'total_n': int(total_n),
+                                                'pos': var_pos,
+                                                'source': 'gnomAD v4'
+                                            }
+
+                        else:  # UCSC snp151
+                            raw_snps = fetch_ucsc_snps(c_clean, fetch_start, fetch_end)
+                            for snp in raw_snps:
+                                allele_ns_raw = snp.get('alleleNs', '')
+                                allele_freqs_raw = snp.get('alleleFreqs', '')
+                                rs_name = snp.get('name', 'rsID Unknown')
+                                
+                                total_n = 0.0
+                                maf = 0.0
+                                
+                                if allele_ns_raw:
+                                    try:
+                                        ns = [float(n) for n in str(allele_ns_raw).strip(',').split(',') if n]
+                                        total_n = sum(ns)
+                                    except ValueError:
+                                        total_n = 0.0
+                                        
+                                if allele_freqs_raw:
+                                    try:
+                                        freqs = [float(f) for f in str(allele_freqs_raw).strip(',').split(',') if f]
+                                        if len(freqs) > 1:
+                                            sorted_freqs = sorted(freqs)
+                                            maf = sorted_freqs[-2]
+                                    except ValueError:
+                                        maf = 0.0
+                                
+                                if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
+                                    rel_s = max(0, snp['chromStart'] - (fetch_start - 1))
+                                    rel_e = min(len(raw_seq), snp['chromEnd'] - (fetch_start - 1))
                                     
-                            if allele_freqs_raw:
-                                try:
-                                    freqs = [float(f) for f in str(allele_freqs_raw).strip(',').split(',') if f]
-                                    if len(freqs) > 1:
-                                        sorted_freqs = sorted(freqs)
-                                        maf = sorted_freqs[-2]
-                                except ValueError:
-                                    maf = 0.0
-                            
-                            if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
-                                rel_s = max(0, snp['chromStart'] - (fetch_start - 1))
-                                rel_e = min(len(raw_seq), snp['chromEnd'] - (fetch_start - 1))
-                                
-                                unique_snps_count.add(rs_name)
-                                
-                                snp_info = {
-                                    'name': rs_name,
-                                    'maf': maf * 100,
-                                    'total_n': int(total_n),
-                                    'pos': fetch_start + rel_s
-                                }
-                                
-                                for pos_idx in range(rel_s, rel_e):
-                                    snp_map[pos_idx] = snp_info
+                                    unique_snps_count.add(rs_name)
+                                    
+                                    snp_info = {
+                                        'name': rs_name,
+                                        'variant_id': rs_name,
+                                        'maf': maf * 100,
+                                        'total_n': int(total_n),
+                                        'pos': fetch_start + rel_s,
+                                        'source': 'UCSC dbSNP'
+                                    }
+                                    
+                                    for pos_idx in range(rel_s, max(rel_s + 1, rel_e)):
+                                        if 0 <= pos_idx < len(raw_seq):
+                                            snp_map[pos_idx] = snp_info
 
                     target_rel_s = exon_start - fetch_start
                     target_rel_e = exon_end - fetch_start
@@ -454,12 +588,18 @@ if st.session_state.get("trigger_generate", False):
                         if is_snp_base and enable_snp_filtering:
                             snp_meta = snp_map[i]
                             rs_id = snp_meta['name']
-                            ncbi_url = f"https://www.ncbi.nlm.nih.gov/snp/{rs_id}" if str(rs_id).startswith('rs') else "#"
-                            maf_text = f" | MAF: {snp_meta['maf']:.2f}% (N={snp_meta['total_n']})" if snp_meta['maf'] > 0 else ""
-                            tooltip_text = f"{rs_id}{maf_text} | Position: chr{chrom}:{snp_meta['pos']} (GRCh38/hg38)"
+                            var_id = snp_meta['variant_id']
+
+                            if "gnomAD" in snp_meta['source']:
+                                link_url = f"https://gnomad.broadinstitute.org/variant/{var_id}?dataset=gnomad_r4"
+                            else:
+                                link_url = f"https://www.ncbi.nlm.nih.gov/snp/{rs_id}" if str(rs_id).startswith('rs') else "#"
+
+                            maf_text = f" | AF: {snp_meta['maf']:.4f}% (AN={snp_meta['total_n']:,})" if snp_meta['maf'] > 0 else ""
+                            tooltip_text = f"{rs_id}{maf_text} | Pos: chr{chrom}:{snp_meta['pos']} ({snp_meta['source']})"
                             
                             html_list.append(
-                                f'<a href="{ncbi_url}" target="_blank" title="{tooltip_text}" '
+                                f'<a href="{link_url}" target="_blank" title="{tooltip_text}" '
                                 f'style="color: #E53935; font-weight: bold; text-decoration: underline; '
                                 f'padding: 0; margin: 0; display: inline;">{display_base}</a>'
                             )
@@ -492,7 +632,9 @@ if st.session_state.get("trigger_generate", False):
                 "input_type": input_type,
                 "header_label": header_label,
                 "enable_snp_filtering": enable_snp_filtering,
-                "min_allele_n_threshold": min_allele_n_threshold
+                "snp_source": snp_source if enable_snp_filtering else "None",
+                "min_allele_n_threshold": min_allele_n_threshold,
+                "snp_maf_threshold_pct": snp_maf_threshold * 100
             }
             st.rerun()
     else:
@@ -508,7 +650,7 @@ if st.session_state["results"]:
     
     st.success(
         f"Target Region: {res['full_target_len']} bp (including padding). "
-        f"Divided into **{len(fragments)} sub-amplicon(s)**."
+        f"Divided into **{len(fragments)} sub-amplicon(s)**. Variant Source: **{res['snp_source']}**."
     )
 
     tabs = st.tabs([f"Fragment {f['sub_idx']+1} ({f['total_bp']} bp)" for f in fragments])
@@ -518,21 +660,24 @@ if st.session_state["results"]:
         with tabs[sub_idx]:
             st.markdown(f"**Fragment {sub_idx+1} Coordinates (GRCh38/hg38):** `chr{res['chrom']}:{f['t_start']}-{f['t_end']}` ({f['total_bp']} bp)")
             if res["enable_snp_filtering"]:
-                st.metric("Identified Critical SNPs (N ≥ " + f"{res['min_allele_n_threshold']})", len(f["unique_snps_count"]))
+                st.metric(
+                    f"Identified Critical SNPs ({res['snp_source']} | MAF ≥ {res['snp_maf_threshold_pct']:.4f}% | AN ≥ {res['min_allele_n_threshold']:,})", 
+                    len(f["unique_snps_count"])
+                )
 
             st.subheader(f"👁️ Sequence Visualizer ({lbl})")
             
             if "Gene Symbol" in res["input_type"]:
-                case_legend = "UPPERCASE = Exonic Sequence | lowercase = Intronic Sequence"
+                case_legend = "UPPERCASE = Exonic Sequence | lowercase = Flanking Sequence"
             elif "rs-Number" in res["input_type"]:
                 case_legend = "UPPERCASE = Target SNP Base | lowercase = Flanking Sequence"
             else:
                 case_legend = "UPPERCASE = Target Region | lowercase = Flanking Sequence"
 
             st.caption(
-                f"**Legend:** Blue brackets **`[`** **`]`** = Target Region | {case_legend} | "
+                f"**Legend:** Blue brackets **`[`** **`]`** = Target Region + Padding | {case_legend} | "
                 " <span style='color: #E53935; font-weight: bold; text-decoration: underline;'>Red Underlined</span> = Flagged SNP. "
-                " *Hover over a flagged SNP for rsID/MAF details, or click to open NCBI dbSNP.*", 
+                f" *Hover over a flagged SNP for variant/AF details, or click to open {res['snp_source']}.*", 
                 unsafe_allow_html=True
             )
 
@@ -565,10 +710,61 @@ if st.session_state["results"]:
                 key=f"p3_text_{sub_idx}"
             )
 
-            st.download_button(
-                label=f"💾 Download Fragment {sub_idx+1} (.txt)",
-                data=f"SEQUENCE_ID=chr{res['chrom']}:{f['t_start']}-{f['t_end']}_frag{sub_idx+1}_hg38\nSEQUENCE_TEMPLATE={f['primer3_text']}\n",
-                file_name=f"sniper3_fragment_{sub_idx+1}_chr{res['chrom']}_{f['t_start']}_{f['t_end']}_hg38.txt",
-                mime="text/plain",
-                key=f"dl_btn_{sub_idx}"
-            )
+            col_copy, col_spacer = st.columns([2.5, 5])
+            
+            with col_copy:
+                st.components.v1.html(
+                    f"""
+                    <style>
+                        body {{
+                            margin: 0;
+                            padding: 0;
+                            background: transparent;
+                        }}
+                    </style>
+                    <button id="copy-btn-{sub_idx}" onclick="copySequence()" style="
+                        background-color: var(--background-color, #f0f2f6);
+                        color: var(--text-color, #31333F);
+                        border: 1px solid rgba(49, 51, 63, 0.2);
+                        padding: 6px 16px;
+                        border-radius: 8px;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        font-size: 14px;
+                        font-weight: 500;
+                        cursor: pointer;
+                        width: 100%;
+                        height: 38px;
+                        white-space: nowrap;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 6px;
+                        box-sizing: border-box;
+                    ">
+                        📋 Copy Sequence
+                    </button>
+                    <script>
+                    function copySequence() {{
+                        var seqText = {repr(f["primer3_text"])};
+                        navigator.clipboard.writeText(seqText).then(function() {{
+                            var parentDoc = window.parent.document;
+                            var textareas = parentDoc.querySelectorAll('textarea');
+                            var targetArea = textareas[{sub_idx}];
+                            if (targetArea) {{
+                                var originalBg = targetArea.style.backgroundColor;
+                                var originalTransition = targetArea.style.transition;
+                                targetArea.style.transition = 'background-color 0.2s ease';
+                                targetArea.style.backgroundColor = '#d4edda';
+                                setTimeout(function() {{
+                                    targetArea.style.backgroundColor = originalBg;
+                                    setTimeout(function() {{
+                                        targetArea.style.transition = originalTransition;
+                                    }}, 300);
+                                }}, 800);
+                            }}
+                        }});
+                    }}
+                    </script>
+                    """,
+                    height=40
+                )
