@@ -2,7 +2,7 @@
 
 **S**NP-**N**eutralizing **I**ntelligent **P**rimer3 **E**xon & **R**egion Template Generator
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sniper3.streamlit.app/)
 [![Genome Assembly](https://img.shields.io/badge/Genome-GRCh38%2Fhg38-blue.svg)](https://genome.ucsc.edu/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://www.python.org/)
 
