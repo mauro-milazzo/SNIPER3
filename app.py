@@ -4,6 +4,8 @@ import time
 import requests
 import streamlit as st
 
+from logger import log_search_query
+
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
@@ -445,198 +447,240 @@ if st.session_state.get("trigger_generate", False):
     
     if chrom and exon_start and exon_end:
         with st.spinner(f"Processing genomic sequence and variant data via {snp_source if enable_snp_filtering else 'GRCh38'}..."):
-            
-            full_target_start = exon_start - target_padding
-            full_target_end = exon_end + target_padding
-            full_target_len = full_target_end - full_target_start + 1
-            
-            sub_targets = []
-            if enable_segmentation and full_target_len > split_threshold:
-                num_fragments = math.ceil((full_target_len - min_overlap) / (split_threshold - min_overlap))
-                effective_step = math.ceil((full_target_len - min_overlap) / num_fragments)
+            try:
+                full_target_start = exon_start - target_padding
+                full_target_end = exon_end + target_padding
+                full_target_len = full_target_end - full_target_start + 1
                 
-                curr_start = full_target_start
-                for idx in range(num_fragments):
-                    curr_end = min(curr_start + effective_step + min_overlap - 1, full_target_end)
-                    if idx == num_fragments - 1:
-                        curr_end = full_target_end
-                    sub_targets.append((curr_start, curr_end))
-                    curr_start = curr_end - min_overlap + 1
-            else:
-                sub_targets.append((full_target_start, full_target_end))
-
-            processed_fragments = []
-
-            for sub_idx, (t_start, t_end) in enumerate(sub_targets):
-                fetch_start = t_start - flank_size
-                fetch_end = t_end + flank_size
-                
-                c_clean = str(chrom).lower().replace('chr', '')
-                if c_clean == '23': c_clean = 'X'
-                elif c_clean == '24': c_clean = 'Y'
-                
-                raw_seq = fetch_ucsc_sequence(c_clean, fetch_start, fetch_end)
-                
-                if raw_seq:
-                    snp_map = {}
-                    unique_snps_count = set()
+                sub_targets = []
+                if enable_segmentation and full_target_len > split_threshold:
+                    num_fragments = math.ceil((full_target_len - min_overlap) / (split_threshold - min_overlap))
+                    effective_step = math.ceil((full_target_len - min_overlap) / num_fragments)
                     
-                    if enable_snp_filtering:
-                        if "gnomAD" in snp_source:
-                            raw_snps = fetch_gnomad_v4_snps(c_clean, fetch_start, fetch_end)
-                            for snp in raw_snps:
-                                total_n = snp['total_n']
-                                maf = snp['maf']
-                                rs_name = snp['name']
-                                var_id = snp['variant_id']
-                                var_pos = snp['pos']
-                                ref_len = max(1, len(snp.get('ref', '')))
-                                
-                                if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
-                                    unique_snps_count.add(var_id)
-                                    # Handle Multi-Nucleotide Variants / Deletions
-                                    for bp_offset in range(ref_len):
-                                        curr_pos = var_pos + bp_offset
-                                        rel_pos = curr_pos - fetch_start
-                                        if 0 <= rel_pos < len(raw_seq):
-                                            snp_map[rel_pos] = {
-                                                'name': rs_name,
-                                                'variant_id': var_id,
-                                                'maf': maf * 100,
-                                                'total_n': int(total_n),
-                                                'pos': var_pos,
-                                                'source': 'gnomAD v4'
-                                            }
+                    curr_start = full_target_start
+                    for idx in range(num_fragments):
+                        curr_end = min(curr_start + effective_step + min_overlap - 1, full_target_end)
+                        if idx == num_fragments - 1:
+                            curr_end = full_target_end
+                        sub_targets.append((curr_start, curr_end))
+                        curr_start = curr_end - min_overlap + 1
+                else:
+                    sub_targets.append((full_target_start, full_target_end))
 
-                        else:  # UCSC snp151
-                            raw_snps = fetch_ucsc_snps(c_clean, fetch_start, fetch_end)
-                            for snp in raw_snps:
-                                allele_ns_raw = snp.get('alleleNs', '')
-                                allele_freqs_raw = snp.get('alleleFreqs', '')
-                                rs_name = snp.get('name', 'rsID Unknown')
-                                
-                                total_n = 0.0
-                                maf = 0.0
-                                
-                                if allele_ns_raw:
-                                    try:
-                                        ns = [float(n) for n in str(allele_ns_raw).strip(',').split(',') if n]
-                                        total_n = sum(ns)
-                                    except ValueError:
-                                        total_n = 0.0
-                                        
-                                if allele_freqs_raw:
-                                    try:
-                                        freqs = [float(f) for f in str(allele_freqs_raw).strip(',').split(',') if f]
-                                        if len(freqs) > 1:
-                                            sorted_freqs = sorted(freqs)
-                                            maf = sorted_freqs[-2]
-                                    except ValueError:
-                                        maf = 0.0
-                                
-                                if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
-                                    rel_s = max(0, snp['chromStart'] - (fetch_start - 1))
-                                    rel_e = min(len(raw_seq), snp['chromEnd'] - (fetch_start - 1))
-                                    
-                                    unique_snps_count.add(rs_name)
-                                    
-                                    snp_info = {
-                                        'name': rs_name,
-                                        'variant_id': rs_name,
-                                        'maf': maf * 100,
-                                        'total_n': int(total_n),
-                                        'pos': fetch_start + rel_s,
-                                        'source': 'UCSC dbSNP'
-                                    }
-                                    
-                                    for pos_idx in range(rel_s, max(rel_s + 1, rel_e)):
-                                        if 0 <= pos_idx < len(raw_seq):
-                                            snp_map[pos_idx] = snp_info
+                processed_fragments = []
 
-                    target_rel_s = exon_start - fetch_start
-                    target_rel_e = exon_end - fetch_start
+                for sub_idx, (t_start, t_end) in enumerate(sub_targets):
+                    fetch_start = t_start - flank_size
+                    fetch_end = t_end + flank_size
                     
-                    sub_target_rel_s = t_start - fetch_start
-                    sub_target_rel_e = t_end - fetch_start
-
-                    p3_str_list = []
-                    html_list = []
-                    in_p3_snp = False
-
-                    for i in range(len(raw_seq)):
-                        base = raw_seq[i]
-                        
-                        is_target_region = (target_rel_s <= i <= target_rel_e)
-                        display_base = base if is_target_region else base.lower()
-
-                        if i == sub_target_rel_s:
-                            p3_str_list.append('[')
-                            html_list.append('<b style="color: #1E88E5; font-size: 1.2em;">[</b>')
-
-                        is_snp_base = i in snp_map
+                    c_clean = str(chrom).lower().replace('chr', '')
+                    if c_clean == '23': c_clean = 'X'
+                    elif c_clean == '24': c_clean = 'Y'
+                    
+                    raw_seq = fetch_ucsc_sequence(c_clean, fetch_start, fetch_end)
+                    
+                    if raw_seq:
+                        snp_map = {}
+                        unique_snps_count = set()
                         
                         if enable_snp_filtering:
-                            if is_snp_base and not in_p3_snp:
-                                p3_str_list.append('<')
-                                in_p3_snp = True
-                            elif not is_snp_base and in_p3_snp:
-                                p3_str_list.append('>')
-                                in_p3_snp = False
+                            if "gnomAD" in snp_source:
+                                raw_snps = fetch_gnomad_v4_snps(c_clean, fetch_start, fetch_end)
+                                for snp in raw_snps:
+                                    total_n = snp['total_n']
+                                    maf = snp['maf']
+                                    rs_name = snp['name']
+                                    var_id = snp['variant_id']
+                                    var_pos = snp['pos']
+                                    ref_len = max(1, len(snp.get('ref', '')))
+                                    
+                                    if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
+                                        unique_snps_count.add(var_id)
+                                        # Handle Multi-Nucleotide Variants / Deletions
+                                        for bp_offset in range(ref_len):
+                                            curr_pos = var_pos + bp_offset
+                                            rel_pos = curr_pos - fetch_start
+                                            if 0 <= rel_pos < len(raw_seq):
+                                                snp_map[rel_pos] = {
+                                                    'name': rs_name,
+                                                    'variant_id': var_id,
+                                                    'maf': maf * 100,
+                                                    'total_n': int(total_n),
+                                                    'pos': var_pos,
+                                                    'source': 'gnomAD v4'
+                                                }
 
-                        p3_str_list.append(display_base)
+                            else:  # UCSC snp151
+                                raw_snps = fetch_ucsc_snps(c_clean, fetch_start, fetch_end)
+                                for snp in raw_snps:
+                                    allele_ns_raw = snp.get('alleleNs', '')
+                                    allele_freqs_raw = snp.get('alleleFreqs', '')
+                                    rs_name = snp.get('name', 'rsID Unknown')
+                                    
+                                    total_n = 0.0
+                                    maf = 0.0
+                                    
+                                    if allele_ns_raw:
+                                        try:
+                                            ns = [float(n) for n in str(allele_ns_raw).strip(',').split(',') if n]
+                                            total_n = sum(ns)
+                                        except ValueError:
+                                            total_n = 0.0
+                                            
+                                    if allele_freqs_raw:
+                                        try:
+                                            freqs = [float(f) for f in str(allele_freqs_raw).strip(',').split(',') if f]
+                                            if len(freqs) > 1:
+                                                sorted_freqs = sorted(freqs)
+                                                maf = sorted_freqs[-2]
+                                        except ValueError:
+                                            maf = 0.0
+                                    
+                                    if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
+                                        rel_s = max(0, snp['chromStart'] - (fetch_start - 1))
+                                        rel_e = min(len(raw_seq), snp['chromEnd'] - (fetch_start - 1))
+                                        
+                                        unique_snps_count.add(rs_name)
+                                        
+                                        snp_info = {
+                                            'name': rs_name,
+                                            'variant_id': rs_name,
+                                            'maf': maf * 100,
+                                            'total_n': int(total_n),
+                                            'pos': fetch_start + rel_s,
+                                            'source': 'UCSC dbSNP'
+                                        }
+                                        
+                                        for pos_idx in range(rel_s, max(rel_s + 1, rel_e)):
+                                            if 0 <= pos_idx < len(raw_seq):
+                                                snp_map[pos_idx] = snp_info
 
-                        if is_snp_base and enable_snp_filtering:
-                            snp_meta = snp_map[i]
-                            rs_id = snp_meta['name']
-                            var_id = snp_meta['variant_id']
+                        target_rel_s = exon_start - fetch_start
+                        target_rel_e = exon_end - fetch_start
+                        
+                        sub_target_rel_s = t_start - fetch_start
+                        sub_target_rel_e = t_end - fetch_start
 
-                            if "gnomAD" in snp_meta['source']:
-                                link_url = f"https://gnomad.broadinstitute.org/variant/{var_id}?dataset=gnomad_r4"
-                            else:
-                                link_url = f"https://www.ncbi.nlm.nih.gov/snp/{rs_id}" if str(rs_id).startswith('rs') else "#"
+                        p3_str_list = []
+                        html_list = []
+                        in_p3_snp = False
 
-                            maf_text = f" | AF: {snp_meta['maf']:.4f}% (AN={snp_meta['total_n']:,})" if snp_meta['maf'] > 0 else ""
-                            tooltip_text = f"{rs_id}{maf_text} | Pos: chr{chrom}:{snp_meta['pos']} ({snp_meta['source']})"
+                        for i in range(len(raw_seq)):
+                            base = raw_seq[i]
                             
-                            html_list.append(
-                                f'<a href="{link_url}" target="_blank" title="{tooltip_text}" '
-                                f'style="color: #E53935; font-weight: bold; text-decoration: underline; '
-                                f'padding: 0; margin: 0; display: inline;">{display_base}</a>'
-                            )
-                        else:
-                            html_list.append(display_base)
+                            is_target_region = (target_rel_s <= i <= target_rel_e)
+                            display_base = base if is_target_region else base.lower()
 
-                        if i == sub_target_rel_e:
-                            p3_str_list.append(']')
-                            html_list.append('<b style="color: #1E88E5; font-size: 1.2em;">]</b>')
+                            if i == sub_target_rel_s:
+                                p3_str_list.append('[')
+                                html_list.append('<b style="color: #1E88E5; font-size: 1.2em;">[</b>')
 
-                    if enable_snp_filtering and in_p3_snp:
-                        p3_str_list.append('>')
+                            is_snp_base = i in snp_map
+                            
+                            if enable_snp_filtering:
+                                if is_snp_base and not in_p3_snp:
+                                    p3_str_list.append('<')
+                                    in_p3_snp = True
+                                elif not is_snp_base and in_p3_snp:
+                                    p3_str_list.append('>')
+                                    in_p3_snp = False
 
-                    primer3_text = "".join(p3_str_list)
+                            p3_str_list.append(display_base)
 
-                    processed_fragments.append({
-                        "sub_idx": sub_idx,
-                        "t_start": t_start,
-                        "t_end": t_end,
-                        "primer3_text": primer3_text,
-                        "html_list": html_list,
-                        "unique_snps_count": unique_snps_count,
-                        "total_bp": t_end - t_start + 1
-                    })
+                            if is_snp_base and enable_snp_filtering:
+                                snp_meta = snp_map[i]
+                                rs_id = snp_meta['name']
+                                var_id = snp_meta['variant_id']
 
-            st.session_state["results"] = {
-                "chrom": chrom,
-                "full_target_len": full_target_len,
-                "fragments": processed_fragments,
-                "input_type": input_type,
-                "header_label": header_label,
-                "enable_snp_filtering": enable_snp_filtering,
-                "snp_source": snp_source if enable_snp_filtering else "None",
-                "min_allele_n_threshold": min_allele_n_threshold,
-                "snp_maf_threshold_pct": snp_maf_threshold * 100
-            }
-            st.rerun()
+                                if "gnomAD" in snp_meta['source']:
+                                    link_url = f"https://gnomad.broadinstitute.org/variant/{var_id}?dataset=gnomad_r4"
+                                else:
+                                    link_url = f"https://www.ncbi.nlm.nih.gov/snp/{rs_id}" if str(rs_id).startswith('rs') else "#"
+
+                                maf_text = f" | AF: {snp_meta['maf']:.4f}% (AN={snp_meta['total_n']:,})" if snp_meta['maf'] > 0 else ""
+                                tooltip_text = f"{rs_id}{maf_text} | Pos: chr{chrom}:{snp_meta['pos']} ({snp_meta['source']})"
+                                
+                                html_list.append(
+                                    f'<a href="{link_url}" target="_blank" title="{tooltip_text}" '
+                                    f'style="color: #E53935; font-weight: bold; text-decoration: underline; '
+                                    f'padding: 0; margin: 0; display: inline;">{display_base}</a>'
+                                )
+                            else:
+                                html_list.append(display_base)
+
+                            if i == sub_target_rel_e:
+                                p3_str_list.append(']')
+                                html_list.append('<b style="color: #1E88E5; font-size: 1.2em;">]</b>')
+
+                        if enable_snp_filtering and in_p3_snp:
+                            p3_str_list.append('>')
+
+                        primer3_text = "".join(p3_str_list)
+
+                        processed_fragments.append({
+                            "sub_idx": sub_idx,
+                            "t_start": t_start,
+                            "t_end": t_end,
+                            "primer3_text": primer3_text,
+                            "html_list": html_list,
+                            "unique_snps_count": unique_snps_count,
+                            "total_bp": t_end - t_start + 1
+                        })
+
+                # Log successful execution to Google Sheets
+                log_search_query(
+                    status="SUCCESS",
+                    input_type=input_type,
+                    query_label=header_label,
+                    chrom=chrom,
+                    target_start=exon_start,
+                    target_end=exon_end,
+                    flank_size=flank_size,
+                    target_padding=target_padding,
+                    enable_snp_filtering=enable_snp_filtering,
+                    snp_source=snp_source if enable_snp_filtering else "None",
+                    maf_threshold_pct=snp_maf_threshold * 100,
+                    min_allele_n=min_allele_n_threshold,
+                    enable_segmentation=enable_segmentation,
+                    split_threshold=split_threshold,
+                    min_overlap=min_overlap,
+                    error_msg=""
+                )
+
+                st.session_state["results"] = {
+                    "chrom": chrom,
+                    "full_target_len": full_target_len,
+                    "fragments": processed_fragments,
+                    "input_type": input_type,
+                    "header_label": header_label,
+                    "enable_snp_filtering": enable_snp_filtering,
+                    "snp_source": snp_source if enable_snp_filtering else "None",
+                    "min_allele_n_threshold": min_allele_n_threshold,
+                    "snp_maf_threshold_pct": snp_maf_threshold * 100
+                }
+                st.rerun()
+
+            except Exception as err:
+                # Log error execution to Google Sheets
+                log_search_query(
+                    status="ERROR",
+                    input_type=input_type,
+                    query_label=header_label,
+                    chrom=chrom,
+                    target_start=exon_start,
+                    target_end=exon_end,
+                    flank_size=flank_size,
+                    target_padding=target_padding,
+                    enable_snp_filtering=enable_snp_filtering,
+                    snp_source=snp_source if enable_snp_filtering else "None",
+                    maf_threshold_pct=snp_maf_threshold * 100,
+                    min_allele_n=min_allele_n_threshold,
+                    enable_segmentation=enable_segmentation,
+                    split_threshold=split_threshold,
+                    min_overlap=min_overlap,
+                    error_msg=str(err)
+                )
+                st.error(f"An error occurred while generating sequence templates: {err}")
     else:
         st.warning("Please specify valid target coordinates, gene parameters, or dbSNP rs-number.")
 
