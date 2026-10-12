@@ -26,7 +26,7 @@
   * Interactive HTML preview highlighting target boundaries `[ ]`, exonic regions (UPPERCASE), and flagged SNPs (<span style="color:red; font-weight:bold;">red underlined</span>).
   * Hover tooltips displaying exact rsIDs, Allele Frequencies (AF %), and sample size metrics (AN).
   * Direct hyperlinks to variant detail pages on gnomAD or NCBI dbSNP.
-  * 
+
 ---
 
 ## 📖 How to Use SNIPER3
