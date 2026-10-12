@@ -3,8 +3,13 @@ import re
 import time
 import requests
 import streamlit as st
-
 from logger import log_search_query
+
+# ==========================================
+# APP CONFIGURATION & FEATURE FLAGS
+# ==========================================
+# Set to False to completely disable query logging to Google Sheets
+ENABLE_SEARCH_LOGGING = True
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -331,6 +336,9 @@ st.sidebar.link_button("🌐 Open NCBI Primer-BLAST", "https://www.ncbi.nlm.nih.
 st.sidebar.link_button("🌐 Open UNAFold", "https://www.unafold.org/mfold/applications/dna-folding-form.php", use_container_width=True)
 st.sidebar.link_button("🌐 Open UCSC In-Silico PCR", "https://genome.ucsc.edu/cgi-bin/hgPcr", use_container_width=True)
 
+st.sidebar.divider()
+st.sidebar.caption("🔒 **Data Privacy:** Search parameters and options are logged anonymously for performance analytics. No personal data or IP addresses are stored.")
+
 # ==========================================
 # INPUT SELECTION
 # ==========================================
@@ -496,7 +504,6 @@ if st.session_state.get("trigger_generate", False):
                                     
                                     if total_n >= min_allele_n_threshold and maf >= snp_maf_threshold:
                                         unique_snps_count.add(var_id)
-                                        # Handle Multi-Nucleotide Variants / Deletions
                                         for bp_offset in range(ref_len):
                                             curr_pos = var_pos + bp_offset
                                             rel_pos = curr_pos - fetch_start
@@ -627,25 +634,26 @@ if st.session_state.get("trigger_generate", False):
                             "total_bp": t_end - t_start + 1
                         })
 
-                # Log successful execution to Google Sheets
-                log_search_query(
-                    status="SUCCESS",
-                    input_type=input_type,
-                    query_label=header_label,
-                    chrom=chrom,
-                    target_start=exon_start,
-                    target_end=exon_end,
-                    flank_size=flank_size,
-                    target_padding=target_padding,
-                    enable_snp_filtering=enable_snp_filtering,
-                    snp_source=snp_source if enable_snp_filtering else "None",
-                    maf_threshold_pct=snp_maf_threshold * 100,
-                    min_allele_n=min_allele_n_threshold,
-                    enable_segmentation=enable_segmentation,
-                    split_threshold=split_threshold,
-                    min_overlap=min_overlap,
-                    error_msg=""
-                )
+                # Log successful query to Google Sheets if ENABLE_SEARCH_LOGGING is True
+                if ENABLE_SEARCH_LOGGING:
+                    log_search_query(
+                        status="SUCCESS",
+                        input_type=input_type,
+                        query_label=header_label,
+                        chrom=chrom,
+                        target_start=exon_start,
+                        target_end=exon_end,
+                        flank_size=flank_size,
+                        target_padding=target_padding,
+                        enable_snp_filtering=enable_snp_filtering,
+                        snp_source=snp_source if enable_snp_filtering else "None",
+                        maf_threshold_pct=snp_maf_threshold * 100,
+                        min_allele_n=min_allele_n_threshold,
+                        enable_segmentation=enable_segmentation,
+                        split_threshold=split_threshold,
+                        min_overlap=min_overlap,
+                        error_msg=""
+                    )
 
                 st.session_state["results"] = {
                     "chrom": chrom,
@@ -661,25 +669,25 @@ if st.session_state.get("trigger_generate", False):
                 st.rerun()
 
             except Exception as err:
-                # Log error execution to Google Sheets
-                log_search_query(
-                    status="ERROR",
-                    input_type=input_type,
-                    query_label=header_label,
-                    chrom=chrom,
-                    target_start=exon_start,
-                    target_end=exon_end,
-                    flank_size=flank_size,
-                    target_padding=target_padding,
-                    enable_snp_filtering=enable_snp_filtering,
-                    snp_source=snp_source if enable_snp_filtering else "None",
-                    maf_threshold_pct=snp_maf_threshold * 100,
-                    min_allele_n=min_allele_n_threshold,
-                    enable_segmentation=enable_segmentation,
-                    split_threshold=split_threshold,
-                    min_overlap=min_overlap,
-                    error_msg=str(err)
-                )
+                if ENABLE_SEARCH_LOGGING:
+                    log_search_query(
+                        status="ERROR",
+                        input_type=input_type,
+                        query_label=header_label,
+                        chrom=chrom,
+                        target_start=exon_start,
+                        target_end=exon_end,
+                        flank_size=flank_size,
+                        target_padding=target_padding,
+                        enable_snp_filtering=enable_snp_filtering,
+                        snp_source=snp_source if enable_snp_filtering else "None",
+                        maf_threshold_pct=snp_maf_threshold * 100,
+                        min_allele_n=min_allele_n_threshold,
+                        enable_segmentation=enable_segmentation,
+                        split_threshold=split_threshold,
+                        min_overlap=min_overlap,
+                        error_msg=str(err)
+                    )
                 st.error(f"An error occurred while generating sequence templates: {err}")
     else:
         st.warning("Please specify valid target coordinates, gene parameters, or dbSNP rs-number.")
@@ -757,36 +765,41 @@ if st.session_state["results"]:
             col_copy, col_spacer = st.columns([2.5, 5])
             
             with col_copy:
-                st.components.v1.html(
+                # Updated to st.iframe to avoid deprecation warnings of st.components.v1.html
+                st.iframe(
                     f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
                     <style>
                         body {{
                             margin: 0;
                             padding: 0;
                             background: transparent;
                         }}
+                        button {{
+                            background-color: #f0f2f6;
+                            color: #31333F;
+                            border: 1px solid rgba(49, 51, 63, 0.2);
+                            padding: 6px 16px;
+                            border-radius: 8px;
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                            font-size: 14px;
+                            font-weight: 500;
+                            cursor: pointer;
+                            width: 100%;
+                            height: 38px;
+                            white-space: nowrap;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            gap: 6px;
+                            box-sizing: border-box;
+                        }}
                     </style>
-                    <button id="copy-btn-{sub_idx}" onclick="copySequence()" style="
-                        background-color: var(--background-color, #f0f2f6);
-                        color: var(--text-color, #31333F);
-                        border: 1px solid rgba(49, 51, 63, 0.2);
-                        padding: 6px 16px;
-                        border-radius: 8px;
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                        font-size: 14px;
-                        font-weight: 500;
-                        cursor: pointer;
-                        width: 100%;
-                        height: 38px;
-                        white-space: nowrap;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        gap: 6px;
-                        box-sizing: border-box;
-                    ">
-                        📋 Copy Sequence
-                    </button>
+                    </head>
+                    <body>
+                    <button id="copy-btn-{sub_idx}" onclick="copySequence()">📋 Copy Sequence</button>
                     <script>
                     function copySequence() {{
                         var seqText = {repr(f["primer3_text"])};
@@ -809,6 +822,18 @@ if st.session_state["results"]:
                         }});
                     }}
                     </script>
+                    </body>
+                    </html>
                     """,
                     height=40
                 )
+
+# ==========================================
+# FOOTER & PRIVACY DISCLAIMER
+# ==========================================
+st.divider()
+st.caption(
+    "🔒 **Privacy & Usage Disclaimer:** To monitor system performance and improve application features, "
+    "anonymized search query parameters (such as requested gene symbols, genomic coordinates, and filter options) "
+    "are logged. No personally identifiable information (PII) or IP addresses are collected or stored."
+)

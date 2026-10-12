@@ -1,5 +1,4 @@
 import datetime
-import traceback
 import streamlit as st
 import gspread
 
@@ -23,23 +22,30 @@ def log_search_query(
     error_msg: str = None
 ):
     """
-    Logs all search parameters, user options, and execution status/errors to Google Sheets.
+    Logs search parameters, options, and execution status/errors to Google Sheets.
     Executes ONLY when 'IS_PRODUCTION' is set to True in Streamlit Secrets.
     """
-    # 1. Environment check: Run only on live Streamlit Cloud
-    is_production = st.secrets.get("IS_PRODUCTION", False)
+    # 1. Environment check: Run only when IS_PRODUCTION is enabled
+    try:
+        is_production = st.secrets.get("IS_PRODUCTION", False)
+    except Exception:
+        is_production = False
+
     if not is_production:
         return
 
     try:
-        # 2. Retrieve credentials and connect
-        credentials = dict(st.secrets["gcp_service_account"])
-        gc = gspread.service_account_from_dict(credentials)
-        
+        # 2. Retrieve credentials and parse private key formatting
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+        # 3. Authenticate with Google Sheets
+        gc = gspread.service_account_from_dict(creds_dict)
         sheet_id = st.secrets.get("GOOGLE_SHEET_ID")
         sheet = gc.open_by_key(sheet_id).sheet1
 
-        # 3. Format values safely
+        # 4. Format row data safely
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         log_row = [
@@ -62,9 +68,9 @@ def log_search_query(
             str(error_msg) if error_msg else ""
         ]
 
-        # 4. Append row to Google Sheet
+        # 5. Append row to sheet
         sheet.append_row(log_row)
 
     except Exception as e:
-        # Prevent logging errors from crashing the main Streamlit user interface
-        print(f"[Logger Exception] Failed to log query to Google Sheets: {e}")
+        # Fail silently to avoid breaking user interface on logging issues
+        print(f"[Logger Exception] Failed to log query: {e}")
