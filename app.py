@@ -11,6 +11,9 @@ from logger import log_search_query
 # Set to False to completely disable query logging to Google Sheets
 ENABLE_SEARCH_LOGGING = True
 
+# Maximum allowed genomic region size (bp) for direct coordinate input
+MAX_COORDINATE_REGION_SIZE = 20000
+
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
@@ -52,65 +55,70 @@ def fetch_refseq_transcripts(gene_symbol: str):
     gene_clean = gene_symbol.strip().upper()
     search_url = f"https://api.genome.ucsc.edu/search?genome=hg38;search={gene_clean}"
     r_search = requests.get(search_url, timeout=10)
+    r_search.raise_for_status()
     
-    if r_search.ok:
-        search_data = r_search.json()
-        pos_str = None
-        
-        if 'positionMatches' in search_data:
-            for cat in search_data['positionMatches']:
-                for match in cat.get('matches', []):
-                    if 'position' in match:
-                        pos_str = match['position']
-                        break
-                if pos_str: break
-        elif 'results' in search_data and len(search_data['results']) > 0:
-            res = search_data['results'][0]
-            pos_str = res.get('position') or f"{res.get('chrom')}:{res.get('chromStart')}-{res.get('chromEnd')}"
+    search_data = r_search.json()
+    pos_str = None
+    
+    if 'positionMatches' in search_data:
+        for cat in search_data['positionMatches']:
+            for match in cat.get('matches', []):
+                if 'position' in match:
+                    pos_str = match['position']
+                    break
+            if pos_str: break
+    elif 'results' in search_data and len(search_data['results']) > 0:
+        res = search_data['results'][0]
+        pos_str = res.get('position') or f"{res.get('chrom')}:{res.get('chromStart')}-{res.get('chromEnd')}"
 
-        if pos_str:
-            match = re.match(r"(chr[0-9XY]+):(\d+)-(\d+)", pos_str, re.IGNORECASE)
-            if match:
-                c_name, s_pos, e_pos = match.group(1), int(match.group(2)), int(match.group(3))
-                track_url = f"https://api.genome.ucsc.edu/getData/track?genome=hg38;track=ncbiRefSeq;chrom={c_name};start={s_pos};end={e_pos}"
-                r_track = requests.get(track_url, timeout=10)
-                if r_track.ok:
-                    refseq_items = r_track.json().get('ncbiRefSeq', [])
-                    gene_transcripts = [t for t in refseq_items if t.get('name2', '').upper() == gene_clean and t.get('name', '').startswith('NM_')]
-                    if not gene_transcripts:
-                        gene_transcripts = [t for t in refseq_items if t.get('name2', '').upper() == gene_clean]
-                    return sorted(gene_transcripts, key=lambda x: x.get('exonCount', 0), reverse=True)
+    if pos_str:
+        match = re.match(r"(chr[0-9XY]+):(\d+)-(\d+)", pos_str, re.IGNORECASE)
+        if match:
+            c_name, s_pos, e_pos = match.group(1), int(match.group(2)), int(match.group(3))
+            track_url = f"https://api.genome.ucsc.edu/getData/track?genome=hg38;track=ncbiRefSeq;chrom={c_name};start={s_pos};end={e_pos}"
+            r_track = requests.get(track_url, timeout=10)
+            r_track.raise_for_status()
+            
+            refseq_items = r_track.json().get('ncbiRefSeq', [])
+            gene_transcripts = [t for t in refseq_items if t.get('name2', '').upper() == gene_clean and t.get('name', '').startswith('NM_')]
+            if not gene_transcripts:
+                gene_transcripts = [t for t in refseq_items if t.get('name2', '').upper() == gene_clean]
+            return sorted(gene_transcripts, key=lambda x: x.get('exonCount', 0), reverse=True)
     return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ucsc_sequence(chrom: str, start_pos: int, end_pos: int):
-    """Fetch genomic DNA sequence from UCSC REST API (GRCh38/hg38)."""
+    """Fetch genomic DNA sequence from UCSC REST API (GRCh38/hg38). Raises Exception on failure."""
     c_clean = str(chrom).lower().replace('chr', '')
     if c_clean == '23': c_clean = 'X'
     elif c_clean == '24': c_clean = 'Y'
     
     ucsc_seq_url = f"https://api.genome.ucsc.edu/getData/sequence?genome=hg38;chrom=chr{c_clean};start={start_pos-1};end={end_pos}"
-    r_seq = requests.get(ucsc_seq_url, timeout=10)
-    if r_seq.ok and 'dna' in r_seq.json():
-        return r_seq.json()['dna'].upper()
-    return None
+    r_seq = requests.get(ucsc_seq_url, timeout=15)
+    r_seq.raise_for_status()
+    
+    res_json = r_seq.json()
+    if 'dna' in res_json:
+        return res_json['dna'].upper()
+    else:
+        raise RuntimeError(f"Failed to fetch reference sequence from UCSC for chr{c_clean}:{start_pos}-{end_pos}.")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ucsc_snps(chrom: str, start_pos: int, end_pos: int):
-    """Fetch snp151 track data from UCSC REST API (GRCh38/hg38)."""
+    """Fetch snp151 track data from UCSC REST API (GRCh38/hg38). Raises Exception on failure."""
     c_clean = str(chrom).lower().replace('chr', '')
     if c_clean == '23': c_clean = 'X'
     elif c_clean == '24': c_clean = 'Y'
     
     snp_url = f"https://api.genome.ucsc.edu/getData/track?genome=hg38;track=snp151;chrom=chr{c_clean};start={start_pos-1};end={end_pos}"
-    r_snp = requests.get(snp_url, timeout=10)
-    if r_snp.ok:
-        return r_snp.json().get('snp151', [])
-    return []
+    r_snp = requests.get(snp_url, timeout=15)
+    r_snp.raise_for_status()
+    
+    return r_snp.json().get('snp151', [])
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_gnomad_v4_snps(chrom: str, start_pos: int, end_pos: int):
-    """Fetch region variants from gnomAD v4 via GraphQL API (GRCh38)."""
+    """Fetch region variants from gnomAD v4 via GraphQL API (GRCh38). Raises Exception on network failure/timeout."""
     c_clean = str(chrom).lower().replace('chr', '')
     if c_clean == '23': c_clean = 'X'
     elif c_clean == '24': c_clean = 'Y'
@@ -146,39 +154,38 @@ def fetch_gnomad_v4_snps(chrom: str, start_pos: int, end_pos: int):
         "dataset": "gnomad_r4"
     }
 
-    try:
-        r = requests.post(url, json={"query": query, "variables": variables}, timeout=10)
-        if r.ok:
-            data = r.json()
-            raw_variants = data.get("data", {}).get("region", {}).get("variants", [])
-            
-            parsed_variants = []
-            for v in raw_variants:
-                exome_af = v.get("exome", {}).get("af") if v.get("exome") else 0.0
-                genome_af = v.get("genome", {}).get("af") if v.get("genome") else 0.0
-                max_af = max(exome_af or 0.0, genome_af or 0.0)
+    r = requests.post(url, json={"query": query, "variables": variables}, timeout=15)
+    r.raise_for_status()
 
-                exome_an = v.get("exome", {}).get("an") if v.get("exome") else 0
-                genome_an = v.get("genome", {}).get("an") if v.get("genome") else 0
-                total_an = (exome_an or 0) + (genome_an or 0)
+    data = r.json()
+    if "errors" in data:
+        raise RuntimeError(f"gnomAD GraphQL API returned errors: {data['errors'][0].get('message', 'Unknown error')}")
 
-                rsids = v.get("rsids") or []
-                rs_name = rsids[0] if rsids else v["variant_id"]
+    raw_variants = data.get("data", {}).get("region", {}).get("variants", [])
+    
+    parsed_variants = []
+    for v in raw_variants:
+        exome_af = v.get("exome", {}).get("af") if v.get("exome") else 0.0
+        genome_af = v.get("genome", {}).get("af") if v.get("genome") else 0.0
+        max_af = max(exome_af or 0.0, genome_af or 0.0)
 
-                parsed_variants.append({
-                    "name": rs_name,
-                    "variant_id": v["variant_id"],
-                    "pos": v["pos"],
-                    "ref": v["ref"],
-                    "alt": v["alt"],
-                    "maf": max_af,
-                    "total_n": total_an
-                })
-            return parsed_variants
-    except Exception as e:
-        st.warning(f"Error querying gnomAD v4 API: {e}")
+        exome_an = v.get("exome", {}).get("an") if v.get("exome") else 0
+        genome_an = v.get("genome", {}).get("an") if v.get("genome") else 0
+        total_an = (exome_an or 0) + (genome_an or 0)
 
-    return []
+        rsids = v.get("rsids") or []
+        rs_name = rsids[0] if rsids else v["variant_id"]
+
+        parsed_variants.append({
+            "name": rs_name,
+            "variant_id": v["variant_id"],
+            "pos": v["pos"],
+            "ref": v["ref"],
+            "alt": v["alt"],
+            "maf": max_af,
+            "total_n": total_an
+        })
+    return parsed_variants
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def resolve_rsid(rs_id: str):
@@ -344,7 +351,8 @@ st.sidebar.caption("🔒 **Data Privacy:** Search parameters and options are log
 # ==========================================
 input_type = st.radio(
     "Select Input Method:", 
-    ["Gene Symbol + Exon Number", "Genomic Coordinates (GRCh38/hg38)", "rs-Number (dbSNP ID)"], 
+    ["Genomic Coordinates (GRCh38/hg38)", "Gene Symbol + Exon Number", "rs-Number (dbSNP ID)"], 
+    index=0,  # Defaults to Genomic Coordinates
     horizontal=True,
     on_change=clear_results
 )
@@ -353,61 +361,93 @@ chrom = None
 exon_start = None
 exon_end = None
 header_label = ""
+input_validation_error = None
 
-if input_type == "Gene Symbol + Exon Number":
+if input_type == "Genomic Coordinates (GRCh38/hg38)":
+    coord_raw = st.text_input(
+        "Enter Genomic Region (GRCh38/hg38):", 
+        value="chr7:117559464-117559655", 
+        placeholder="e.g., chr7:117559464-117559655 or 4:158679508-158679699",
+        on_change=clear_results,
+        help="Accepted formats: chr4:158679508-158679699 or 4:158679508-158679699. Maximum region size is 20,000 bp."
+    ).strip()
+
+    if coord_raw:
+        # Regex to parse chromosome, start, and end (allowing optional commas/dots in numbers)
+        m = re.match(r"^(?:chr)?([0-9XY]+)\s*:\s*([\d,\.]+)\s*-\s*([\d,\.]+)$", coord_raw, re.IGNORECASE)
+        if m:
+            chrom_candidate = m.group(1).upper()
+            start_str = re.sub(r"[,\.]", "", m.group(2))
+            end_str = re.sub(r"[,\.]", "", m.group(3))
+            
+            try:
+                start_val = int(start_str)
+                end_val = int(end_str)
+                
+                if end_val <= start_val:
+                    input_validation_error = f"Invalid coordinates: End position ({end_val:,}) must be strictly greater than Start position ({start_val:,})."
+                else:
+                    region_len = end_val - start_val + 1
+                    if region_len > MAX_COORDINATE_REGION_SIZE:
+                        input_validation_error = f"Region length ({region_len:,} bp) exceeds the maximum allowed limit of {MAX_COORDINATE_REGION_SIZE:,} bp."
+                    else:
+                        chrom = chrom_candidate
+                        exon_start = start_val
+                        exon_end = end_val
+                        header_label = f"chr{chrom}:{exon_start}-{exon_end} (GRCh38/hg38)"
+                        st.info(f"**Target Region:** `chr{chrom}:{exon_start:,}-{exon_end:,}` | **Length:** {region_len:,} bp")
+            except ValueError:
+                input_validation_error = "Could not parse start or end positions as valid integers."
+        else:
+            input_validation_error = "Invalid coordinate format. Please use the format 'chr4:158679508-158679699' or '4:158679508-158679699'."
+    else:
+        st.caption("💡 *Example format: `chr7:117559464-117559655` or `4:158679508-158679699`*")
+
+elif input_type == "Gene Symbol + Exon Number":
     col1, col2 = st.columns(2)
     with col1:
-        gene_input = st.text_input("Gene Symbol (e.g., CFTR, COMT, ANO5):", value="CFTR", on_change=clear_results).strip().upper()
+        gene_input = st.text_input("Gene Symbol (e.g., CFTR, COMT, ANO5):", value="CFTR", placeholder="e.g., CFTR", on_change=clear_results).strip().upper()
     with col2:
         exon_num = st.number_input("Exon Number:", min_value=1, value=11, step=1, on_change=clear_results)
         
     if gene_input:
-        gene_transcripts = fetch_refseq_transcripts(gene_input)
-        
-        if gene_transcripts:
-            transcript_options = {f"{t['name']} ({t.get('exonCount', 0)} exons)": t for t in gene_transcripts}
-            selected_label = st.selectbox("Select RefSeq Transcript (GRCh38/hg38):", list(transcript_options.keys()), on_change=clear_results)
-            selected_t = transcript_options[selected_label]
+        try:
+            gene_transcripts = fetch_refseq_transcripts(gene_input)
             
-            transcript_acc = selected_t['name']
-            chrom = selected_t['chrom'].replace('chr', '')
-            strand = selected_t['strand']
-            
-            exon_starts = [int(x) + 1 for x in selected_t['exonStarts'].strip(',').split(',') if x]
-            exon_ends = [int(x) for x in selected_t['exonEnds'].strip(',').split(',') if x]
-            exons = list(zip(exon_starts, exon_ends))
-            
-            if strand == '-':
-                exons = sorted(exons, key=lambda x: x[0], reverse=True)
-            else:
-                exons = sorted(exons, key=lambda x: x[0], reverse=False)
+            if gene_transcripts:
+                transcript_options = {f"{t['name']} ({t.get('exonCount', 0)} exons)": t for t in gene_transcripts}
+                selected_label = st.selectbox("Select RefSeq Transcript (GRCh38/hg38):", list(transcript_options.keys()), on_change=clear_results)
+                selected_t = transcript_options[selected_label]
                 
-            if exon_num <= len(exons):
-                exon_start, exon_end = exons[exon_num - 1]
-                header_label = f"{gene_input} ({transcript_acc}) Exon {exon_num}"
-                st.info(
-                    f"**Exon {exon_num}/{len(exons)} Coordinates (GRCh38/hg38):** `chr{chrom}:{exon_start}-{exon_end}` | "
-                    f"**Exon Length:** {exon_end - exon_start + 1} bp"
-                )
+                transcript_acc = selected_t['name']
+                chrom = selected_t['chrom'].replace('chr', '')
+                strand = selected_t['strand']
+                
+                exon_starts = [int(x) + 1 for x in selected_t['exonStarts'].strip(',').split(',') if x]
+                exon_ends = [int(x) for x in selected_t['exonEnds'].strip(',').split(',') if x]
+                exons = list(zip(exon_starts, exon_ends))
+                
+                if strand == '-':
+                    exons = sorted(exons, key=lambda x: x[0], reverse=True)
+                else:
+                    exons = sorted(exons, key=lambda x: x[0], reverse=False)
+                    
+                if exon_num <= len(exons):
+                    exon_start, exon_end = exons[exon_num - 1]
+                    header_label = f"{gene_input} ({transcript_acc}) Exon {exon_num}"
+                    st.info(
+                        f"**Exon {exon_num}/{len(exons)} Coordinates (GRCh38/hg38):** `chr{chrom}:{exon_start}-{exon_end}` | "
+                        f"**Exon Length:** {exon_end - exon_start + 1} bp"
+                    )
+                else:
+                    input_validation_error = f"Exon {exon_num} does not exist in selected transcript (Total exons: {len(exons)})."
             else:
-                st.error(f"Exon {exon_num} does not exist in selected transcript (Total exons: {len(exons)}).")
-        else:
-            st.error(f"Could not find RefSeq transcripts for gene symbol **{gene_input}** on GRCh38/hg38.")
+                input_validation_error = f"Could not find RefSeq transcripts for gene symbol **{gene_input}** on GRCh38/hg38."
+        except Exception as e:
+            input_validation_error = f"Error fetching gene transcripts: {e}"
 
-elif input_type == "Genomic Coordinates (GRCh38/hg38)":
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        chrom = st.text_input("Chromosome (e.g., 7, 22, X):", value="7", on_change=clear_results).strip()
-    with col2:
-        exon_start = st.number_input("Target Start Position (GRCh38/hg38):", min_value=1, value=117559464, on_change=clear_results)
-    with col3:
-        exon_end = st.number_input("Target End Position (GRCh38/hg38):", min_value=1, value=117559655, on_change=clear_results)
-    
-    if chrom and exon_start and exon_end:
-        header_label = f"chr{chrom}:{exon_start}-{exon_end} (GRCh38/hg38)"
-
-else:  # rs-Number input (Default: rs113993960)
-    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs113993960, rs4680):", value="rs113993960", on_change=clear_results).strip()
+else:  # rs-Number input
+    rs_input = st.text_input("Enter dbSNP rs-number (e.g., rs113993960, rs4680):", value="rs113993960", placeholder="e.g., rs113993960", on_change=clear_results).strip()
     if rs_input:
         c, s, e, formatted_rs = resolve_rsid(rs_input)
         if c and s and e:
@@ -419,7 +459,11 @@ else:  # rs-Number input (Default: rs113993960)
                 f"**Resolved {formatted_rs} Position:** `chr{chrom}:{exon_start}-{exon_end}` (GRCh38/hg38)"
             )
         else:
-            st.error(f"Could not locate **{formatted_rs}** on GRCh38/hg38 genome assembly. Please check the rsID.")
+            input_validation_error = f"Could not locate **{formatted_rs}** on GRCh38/hg38 genome assembly. Please check the rsID."
+
+# Display input validation errors if present
+if input_validation_error:
+    st.error(f"❌ **Input Error:** {input_validation_error}")
 
 # ==========================================
 # BUTTON & LIVE TIMER FRAGMENT
@@ -434,7 +478,7 @@ def render_button_and_cooldown():
     col_btn, col_timer = st.columns([1, 3], vertical_alignment="center")
     
     with col_btn:
-        btn_disabled = remaining_time > 0
+        btn_disabled = (remaining_time > 0) or (input_validation_error is not None)
         if st.button("🚀 Generate Sequence Templates", type="primary", disabled=btn_disabled):
             st.session_state["last_button_click_time"] = time.time()
             st.session_state["trigger_generate"] = True
@@ -453,7 +497,7 @@ render_button_and_cooldown()
 if st.session_state.get("trigger_generate", False):
     st.session_state["trigger_generate"] = False
     
-    if chrom and exon_start and exon_end:
+    if chrom and exon_start and exon_end and not input_validation_error:
         with st.spinner(f"Processing genomic sequence and variant data via {snp_source if enable_snp_filtering else 'GRCh38'}..."):
             try:
                 full_target_start = exon_start - target_padding
@@ -669,6 +713,16 @@ if st.session_state.get("trigger_generate", False):
                 st.rerun()
 
             except Exception as err:
+                # Reset any old persisted results
+                st.session_state["results"] = None
+
+                # Format user-friendly error message
+                err_str = str(err)
+                if "Read timed out" in err_str or "HTTPSConnectionPool" in err_str:
+                    user_error_msg = f"The requested service ({snp_source if enable_snp_filtering else 'UCSC'}) timed out or is currently unresponsive. Please try again or select a different database in the sidebar."
+                else:
+                    user_error_msg = f"An error occurred while querying genomic data: {err}"
+
                 if ENABLE_SEARCH_LOGGING:
                     log_search_query(
                         status="ERROR",
@@ -686,9 +740,9 @@ if st.session_state.get("trigger_generate", False):
                         enable_segmentation=enable_segmentation,
                         split_threshold=split_threshold,
                         min_overlap=min_overlap,
-                        error_msg=str(err)
+                        error_msg=err_str
                     )
-                st.error(f"An error occurred while generating sequence templates: {err}")
+                st.error(f"❌ **Execution Error:** {user_error_msg}")
     else:
         st.warning("Please specify valid target coordinates, gene parameters, or dbSNP rs-number.")
 
@@ -765,7 +819,6 @@ if st.session_state["results"]:
             col_copy, col_spacer = st.columns([2.5, 5])
             
             with col_copy:
-                # Updated to st.iframe to avoid deprecation warnings of st.components.v1.html
                 st.iframe(
                     f"""
                     <!DOCTYPE html>
