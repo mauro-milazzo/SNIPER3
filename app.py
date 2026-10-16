@@ -25,7 +25,7 @@ st.set_page_config(
 
 # Render main application header and subtitle explanation
 st.title("🧬 SNIPER3")
-st.caption("**S**specific **N**ucleotide **I**ntegration & **P**rimer3 **E**nhanced **R**egion Generator")
+st.caption("**S**NP-**N**eutralizing **I**ntelligent **P**rimer3 **E**xon & **R**egion Template Generator")
 
 st.markdown(
     "Generate standardized sequence templates formatted for Primer3Web and Primer3Plus using **GRCh38/hg38** coordinates. "
