@@ -60,8 +60,8 @@
 1. Click **📋 Copy Sequence** under your desired fragment. The text area will flash green to confirm the sequence is copied to your clipboard.
 2. Open **[Primer3Web](https://primer3.ut.ee/)** or **[Primer3Plus](https://www.primer3plus.com/)**.
 3. Paste the copied sequence directly into the **`SEQUENCE_TEMPLATE`** input field.
-4. **How Primer3 Interprets SNIPER3 Formatting:**
+4. Only necessary In Primer3Plus: Press "Regions from Seq." button.
+5. **How Primer3 Interprets SNIPER3 Formatting:**
    * **Brackets `[ ]`:** Define the target region that primers must flank.
    * **Angle Brackets `< >`:** Tell Primer3 to **avoid placing primer binding sites** on these positions (neutralizing SNP mismatch risks).
-   * **Capitalization:** Useful when configuring Primer3 parameters like `Included Region` or setting specific conditions for exonic boundaries.
-5. Click **Pick Primers** in Primer3 to receive optimal primer pairs that completely avoid high-frequency population variants!
+6. Click **Pick Primers** in Primer3 to receive optimal primer pairs that completely avoid high-frequency population variants!
